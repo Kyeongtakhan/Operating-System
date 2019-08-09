@@ -1,0 +1,265 @@
+//Implement the API, modeling the translation of virtual page address to a
+//physical frame address. We assume a 32 bit virtual memory and physical memory.
+//Access to the page table is only via the CR3 register.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include "vmemory.h"
+
+#define OUT_TLB "../bin/tlb_out.txt"
+
+bool FIFO_policy = true;
+int **cr3;
+
+int sizeOfTLB = 8;
+int tlb[8][2];        // this is the initial TLB
+//
+// More static functions can be implemented here
+//
+unsigned long split_offset(unsigned long* buff){
+  static unsigned long pages[5];
+  unsigned long mask_v_page = 0x0000f;
+  unsigned long temp = 0;
+  int i;
+  for (i = 3; i < 8; ++i){
+    temp = temp | (buff[i] << 4 * i);
+  }
+  for(i = 5; i< 8; ++i){
+    temp = temp >> 4;
+  }
+  return temp;
+}
+
+int get_offset(unsigned long v_addr){
+  int i;
+  unsigned long result = 0;
+  unsigned long mask1 = 0x0000000f;
+  unsigned long bytes[8];
+  unsigned long off_set[3];
+  for(i =0; i < 8; ++i){
+    bytes[i] = v_addr & mask1;
+    v_addr = v_addr >> 4;
+  }
+  for(i = 0; i< 3; ++i){
+    off_set[i] = bytes[i];
+    //printf("off_set[%d] = %lu\n",i, off_set[i]);
+  }
+  for(i = 0; i< 3; ++i){
+    result = result | (off_set[i] << 4 * i);
+  }
+  // printf("off_set = %1lx\n", result);
+  // printf("off_set (int) = %d\n", (int)result);
+  // printf("\n");
+  return (int) result;
+}
+
+unsigned long make_1pages(unsigned long pages){
+  unsigned long page_1st[5];
+  unsigned long mask_v_1st = 0x00003;
+  unsigned long result = 0;
+  int i;
+  for(i = 0; i < 5; ++i){
+    pages = pages >>2;
+  }
+  for(i =0; i < 5; ++i){
+    page_1st[i] = pages & mask_v_1st;
+    pages = pages >> 2;
+  }
+  for(i =0; i < 5; ++i){
+  //  printf("page_1st[%d] = %lu\n", i,page_1st[i]);
+    result = result | (page_1st[i] << 2 * i);
+  }
+  // printf("result : %lu\n", result);
+  // printf("\n");
+  return result;
+}
+
+unsigned long make_2pages(unsigned long pages){
+  unsigned long page_2nd[5];
+  unsigned long mask_v_2nd = 0x00003;
+  unsigned long result = 0;
+  int i;
+  for(i =0; i < 5; ++i){
+    page_2nd[i] = pages & mask_v_2nd;
+    pages = pages >> 2;
+  }
+  for(i =0; i < 5; ++i){
+  //  printf("page_2nd[%d] = %lu\n", i,page_2nd[i]);
+    result = result | (page_2nd[i] << 2 * i);
+  }
+  // printf("result : %lu\n", result);
+  return result;
+}
+
+// The implementation of get_vpage_cr3 is provided in
+// an object file, so no need to re-implement it
+void initialize_vmanager(int policy)
+{
+  // Set LRU policy when passsed as a parameter
+  if (policy)
+    FIFO_policy = false;
+  cr3 = get_vpage_cr3();
+  for (int i = 0; i < sizeOfTLB; i ++) {
+    for (int j = 0; j < 2; j ++) {
+      tlb[i][j] = -1;
+    }
+  }
+  // printf("FIFO_policy, %d\n", FIFO_policy);
+  // printf("cr3: %p\n", cr3);
+}
+
+//
+// The implementation of following functions is required
+//
+int fetch_physical_frame(unsigned int v_addr)    // This is 1.2
+{
+  //TODO
+  unsigned long mask1 = 0x0000000f;
+  unsigned long mask_v_page = 0x0000f;
+  unsigned long pages;
+  unsigned long bytes[8];
+  int i =0;
+  for(i =0; i < 8; ++i){
+    bytes[i] = v_addr & mask1;
+    v_addr = v_addr >> 4;
+  }
+
+  pages = split_offset(bytes);
+  unsigned long page1 = make_1pages(pages);
+
+  unsigned long page2 = make_2pages(pages);
+  // printf("\n");
+  // printf("cr3 + page1 = %p\n", (cr3 + page1));
+  // printf("cr3 + page1 + page2 = %p\n", (cr3 + page1 + page2));
+  //printf("cr3[0] = %p\n", cr3[0]);
+  if(page1 == 0 || page1 == -1){
+    return -1;
+  }
+  if((cr3 + page1) == NULL){
+    return -1;
+  }
+  else{ // (cr3 + page2 ) pointing to something
+    int ptr  = (int)cr3[(int)page1][(int)page2];
+    // printf("int cr3 + page1 + page2 = %d\n",ptr);
+    // printf("lx  cr3 + page1 + page2 = %x\n", ptr);
+    return ptr;
+  }
+}
+
+void print_physical_address(int frame, int offset) // This is 1.2
+{
+  char front[] = {"0x"};
+  if(frame == -1){
+    // printf("-1");
+    return;
+  }
+  else{
+    int result = frame + offset;
+    // printf("result is %s%1x\n",front, result);
+  }
+  return;
+}
+
+/***********************************************
+*************** TLB ****************************
+************************************************/
+
+
+int count_FIFO = 0;
+int count_LRU = 0;
+int hit_count = 0;
+int total_run = 0;
+
+int track_FIFO() {
+  return count_FIFO;
+}
+
+int track_LRU() {
+  return count_LRU;
+}
+
+// int n --> containing the virtual address 20 MSB
+// return physical frame base address mapped to that particular virtual address
+int get_tlb_entry(int n)
+{
+  for (int i = 0; i < 8; i ++) {
+    if (tlb[i][0] == n) {
+      return tlb[i][1];
+    }
+  }
+  // printf("TLB miss\n");
+  return -1;
+}
+
+
+
+void populate_tlb(int v_addr, int p_addr)
+{
+  if (FIFO_policy) {
+    if (get_tlb_entry(v_addr) != -1) {
+      hit_count ++;
+      total_run ++;
+      return;
+    } else {
+      int x = track_FIFO();
+      tlb[x][0] = v_addr;
+      tlb[x][1] = p_addr;
+      count_FIFO ++;
+      if (count_FIFO == sizeOfTLB) {
+        count_FIFO = 0;
+      }
+      total_run ++;
+    }
+    return;
+  }
+  else {
+    // DO SOMETHING FOR LRU.
+    int y = track_LRU();
+    tlb[y][0] = v_addr;
+    tlb[y][1] = p_addr;
+    return;
+  }
+}
+
+
+float get_hit_ratio()
+{
+  if (FIFO_policy) {
+    printf("hit_count: %d\n", hit_count);
+    printf("total_run: %d\n", total_run);
+    float ratio = (float) hit_count / total_run;
+    return ratio;
+  }
+  // LRU
+  else {
+
+  }
+}
+
+//Write to the file in OUT_TLB
+//
+void print_tlb()
+{
+  FILE *outfile = fopen(OUT_TLB, "w");
+  fprintf(outfile,"  virtual  |  physical  \n");
+  fprintf(outfile, "----------------------\n");
+  for (int i = 0; i < sizeOfTLB; i ++) {
+    if (tlb[i][0] == -1 || tlb[i][1] == -1) {
+      fprintf(outfile, "%d:  -1     |     -1  \n", i);
+    } else {
+      fprintf(outfile, "%d: %05x   |    %05x\n", i, tlb[i][0], tlb[i][1]);
+    }
+  }
+  if(FIFO_policy){
+    fprintf(outfile, "track_FIFO: %d", track_FIFO());
+  } else {
+    fprintf(outfile, "track_LRU: %d", track_LRU());
+  }
+  fclose (outfile);
+}
